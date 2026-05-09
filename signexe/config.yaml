@@ -1,0 +1,24 @@
+auth:
+  users:
+    - username: admin
+      password: signexe2024
+
+certificates:
+  passwords:
+    # 证书文件名: 密码
+    # my_cert.pfx: my_password
+
+signing:
+  timestamper_url: "http://timestamp.digicert.com"
+  additional_flags: ""
+  max_file_size_mb: 500
+
+server:
+  host: "127.0.0.1"
+  port: 7860
+
+uploads:
+  retention_hours: 24
+
+# 可选：显式指定 signtool.exe 路径
+# signtool_exe: "C:\\Program Files (x86)\\Windows Kits\\10\\bin\\10.0.22621.0\\x64\\signtool.exe"
