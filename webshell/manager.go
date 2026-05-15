@@ -30,14 +30,14 @@ type CmdFile struct {
 
 // ExecRecord represents a single execution of a .cmd file
 type ExecRecord struct {
-	ID        int64
-	CmdName   string
-	Status    ExecStatus
-	StartTime time.Time
-	EndTime   *time.Time
-	ExitCode  int
-	Output    *OutputBuf
-	Hub       *SubHub
+	ID        int64      `json:"ID"`
+	CmdName   string     `json:"cmdName"`
+	Status    ExecStatus `json:"status"`
+	StartTime time.Time  `json:"startTime"`
+	EndTime   *time.Time `json:"endTime"`
+	ExitCode  int        `json:"exitCode"`
+	Output    *OutputBuf `json:"-"`
+	Hub       *SubHub    `json:"-"`
 }
 
 // CmdLock provides per-.cmd file mutual exclusion

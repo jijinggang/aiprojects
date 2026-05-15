@@ -7,9 +7,9 @@ import (
 
 // OutputLine represents a single line of process output
 type OutputLine struct {
-	Seq    int
-	Text   string
-	Stream string // "stdout" or "stderr"
+	Seq    int    `json:"seq"`
+	Text   string `json:"text"`
+	Stream string `json:"stream"` // "stdout" or "stderr"
 }
 
 // OutputBuf stores output lines with a max size limit
