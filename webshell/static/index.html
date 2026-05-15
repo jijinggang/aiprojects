@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>WebShell</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: Consolas, monospace; background: #1e1e1e; color: #d4d4d4; display: flex; height: 100vh; overflow: hidden; }
+#sidebar { width: 240px; background: #252526; border-right: 1px solid #3c3c3c; overflow-y: auto; padding: 10px; }
+#search { width: 100%; padding: 6px 10px; background: #3c3c3c; border: 1px solid #555; color: #d4d4d4; border-radius: 3px; font-family: inherit; }
+.cmd-item { padding: 8px 10px; cursor: pointer; border-bottom: 1px solid #333; display: flex; align-items: center; gap: 8px; }
+.cmd-item:hover { background: #2a2d2e; }
+.cmd-item.selected { background: #37373d; }
+.status-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+.status-idle { background: #4ec9b0; }
+.status-running { background: #dcdcaa; animation: pulse 1s infinite; }
+.status-failed { background: #f44747; }
+.status-done { background: #6a9955; }
+.cmd-name { flex: 1; }
+.cmd-meta { font-size: 11px; color: #858585; }
+#main { flex: 1; display: flex; flex-direction: column; }
+#terminal-header { padding: 8px 12px; background: #252526; border-bottom: 1px solid #3c3c3c; display: flex; align-items: center; gap: 12px; min-height: 36px; }
+#terminal-header .label { color: #569cd6; }
+#terminal-header .status-tag { padding: 2px 6px; border-radius: 3px; font-size: 11px; }
+#terminal-header .tag-running { background: #dcdcaa20; color: #dcdcaa; }
+#terminal-header .tag-done { background: #6a995520; color: #6a9955; }
+#terminal-header .tag-failed { background: #f4474720; color: #f44747; }
+#run-btn { padding: 4px 12px; background: #0e639c; color: #fff; border: none; cursor: pointer; border-radius: 3px; font-family: inherit; font-size: 12px; }
+#run-btn:hover { background: #1177bb; }
+#run-btn:disabled { background: #555; cursor: not-allowed; color: #888; }
+#terminal { flex: 1; padding: 10px 12px; overflow-y: auto; font-size: 13px; line-height: 1.5; white-space: pre-wrap; word-break: break-all; }
+#terminal .line { display: block; }
+#terminal .stderr { color: #f44747; }
+#terminal .stdout { color: #d4d4d4; }
+#statusbar { padding: 4px 12px; background: #007acc; color: #fff; font-size: 11px; display: flex; justify-content: space-between; }
+.history-section { margin-top: 8px; border-top: 1px solid #3c3c3c; padding-top: 8px; }
+.history-title { color: #858585; font-size: 11px; margin-bottom: 4px; }
+.history-item { padding: 4px 10px; cursor: pointer; font-size: 12px; color: #858585; display: flex; gap: 8px; }
+.history-item:hover { background: #2a2d2e; color: #d4d4d4; }
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+</style>
+</head>
+<body>
+<div id="sidebar">
+  <input id="search" placeholder="搜索命令..." oninput="filterCommands()">
+  <div id="cmd-list"></div>
+  <div id="history-section" class="history-section" style="display:none">
+    <div class="history-title">历史记录</div>
+    <div id="history-list"></div>
+  </div>
+</div>
+<div id="main">
+  <div id="terminal-header">
+    <span class="label" id="term-label">选择一个命令</span>
+    <span id="term-status"></span>
+    <button id="run-btn" style="display:none" onclick="runCurrentCmd()">执行</button>
+  </div>
+  <div id="terminal"></div>
+  <div id="statusbar">
+    <span id="conn-status">连接中...</span>
+    <span id="cmd-info"></span>
+  </div>
+</div>
+<script>
+const state = { ws: null, commands: [], selectedCmd: null, autoScroll: true };
+
+function connectWS() {
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  state.ws = new WebSocket(proto + '//' + location.host + '/ws');
+  state.ws.onopen = () => { document.getElementById('conn-status').textContent = '连接: OK'; };
+  state.ws.onclose = () => {
+    document.getElementById('conn-status').textContent = '连接: 断开';
+    setTimeout(connectWS, 2000);
+  };
+  state.ws.onmessage = (e) => {
+    try { handleMessage(JSON.parse(e.data)); } catch(err) { console.error(err); }
+  };
+}
+
+function handleMessage(msg) {
+  switch(msg.type) {
+    case 'cmdList': state.commands = msg.commands; renderCommandList(); break;
+    case 'output': appendLine(msg); break;
+    case 'status': updateStatus(msg); break;
+    case 'error': showError(msg); break;
+    case 'replayOutput': handleReplayOutput(msg); break;
+    case 'history': renderHistory(msg); break;
+  }
+}
+
+function sendWS(obj) { if (state.ws && state.ws.readyState === WebSocket.OPEN) state.ws.send(JSON.stringify(obj)); }
+
+function renderCommandList() {
+  const container = document.getElementById('cmd-list');
+  const filter = document.getElementById('search').value.toLowerCase();
+  container.innerHTML = '';
+  state.commands
+    .filter(c => c.name.toLowerCase().includes(filter))
+    .forEach(c => {
+      const div = document.createElement('div');
+      div.className = 'cmd-item' + (state.selectedCmd === c.name ? ' selected' : '');
+      const statusClass = c.running ? 'status-running' : 'status-idle';
+      const statusLabel = c.running ? '运行中' : '就绪';
+      const meta = c.running ? (c.watchers || 0) + '人观看' : '历史:' + c.historyCount;
+      div.innerHTML = `<span class="status-dot ${statusClass}"></span><span class="cmd-name">${c.name}</span><span class="cmd-meta">${statusLabel} ${meta}</span>`;
+      div.onclick = () => selectCommand(c.name);
+      container.appendChild(div);
+    });
+}
+
+function selectCommand(name) {
+  state.selectedCmd = name;
+  clearTerminal();
+  renderCommandList();
+  sendWS({ type: 'history', cmdName: name });
+  const cmd = state.commands.find(c => c.name === name);
+  if (cmd) {
+    document.getElementById('term-label').textContent = name;
+    if (cmd.running) {
+      document.getElementById('run-btn').style.display = 'none';
+      sendWS({ type: 'watch', cmdName: name });
+    } else {
+      document.getElementById('run-btn').style.display = '';
+      document.getElementById('run-btn').disabled = false;
+    }
+  }
+}
+
+function runCurrentCmd() {
+  if (!state.selectedCmd) return;
+  sendWS({ type: 'run', cmdName: state.selectedCmd });
+  document.getElementById('run-btn').disabled = true;
+}
+
+function appendLine(msg) {
+  const term = document.getElementById('terminal');
+  const span = document.createElement('span');
+  span.className = 'line ' + (msg.stream === 'stderr' ? 'stderr' : 'stdout');
+  span.textContent = msg.text;
+  term.appendChild(span);
+  if (state.autoScroll) term.scrollTop = term.scrollHeight;
+}
+
+function handleReplayOutput(msg) {
+  if (!msg.lines) return;
+  const term = document.getElementById('terminal');
+  const frag = document.createDocumentFragment();
+  msg.lines.forEach(l => {
+    const span = document.createElement('span');
+    span.className = 'line ' + (l.stream === 'stderr' ? 'stderr' : 'stdout');
+    span.textContent = l.text;
+    frag.appendChild(span);
+  });
+  term.appendChild(frag);
+  if (state.autoScroll) term.scrollTop = term.scrollHeight;
+}
+
+function updateStatus(msg) {
+  const tag = document.getElementById('term-status');
+  const tagClass = 'tag-' + msg.status;
+  const labels = { running: '运行中', done: '已完成', failed: '失败' };
+  tag.className = 'status-tag ' + tagClass;
+  tag.textContent = labels[msg.status] || msg.status;
+  if (msg.status === 'done' || msg.status === 'failed') {
+    document.getElementById('run-btn').disabled = false;
+  }
+}
+
+function showError(msg) {
+  if (msg.code === 'CMD_LOCKED') {
+    document.getElementById('terminal').innerHTML += '<span class="line stderr">' + msg.message + '，自动切换观看模式</span>\n';
+    if (state.selectedCmd) sendWS({ type: 'watch', cmdName: state.selectedCmd });
+  } else {
+    document.getElementById('terminal').innerHTML += '<span class="line stderr">错误: ' + msg.message + '</span>\n';
+  }
+}
+
+function renderHistory(msg) {
+  const section = document.getElementById('history-section');
+  const list = document.getElementById('history-list');
+  section.style.display = msg.records && msg.records.length > 0 ? '' : 'none';
+  list.innerHTML = '';
+  if (!msg.records) return;
+  msg.records.reverse().forEach(r => {
+    const div = document.createElement('div');
+    div.className = 'history-item';
+    const stLabels = { running: '运行中', done: '完成', failed: '失败' };
+    const end = r.endTime ? new Date(r.endTime).toLocaleTimeString() : '--';
+    const start = new Date(r.startTime).toLocaleTimeString();
+    div.innerHTML = `<span>#${r.ID}</span><span>${stLabels[r.status]||r.status}</span><span>${start}-${end}</span>`;
+    div.onclick = () => sendWS({ type: 'replay', cmdName: msg.cmdName, execId: r.ID });
+    list.appendChild(div);
+  });
+}
+
+function clearTerminal() { document.getElementById('terminal').innerHTML = ''; }
+function filterCommands() { renderCommandList(); }
+
+// Auto-scroll detection
+document.getElementById('terminal').addEventListener('scroll', () => {
+  const t = document.getElementById('terminal');
+  state.autoScroll = t.scrollHeight - t.scrollTop - t.clientHeight < 20;
+});
+
+connectWS();
+</script>
+</body>
+</html>
